@@ -32,7 +32,7 @@ class Message(BaseModel):
         return cls(role=Message.Role.assistant, content=content, **kw)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"role": self.role, "content": self.content}
+        return {"role": self.role.value, "content": self.content}
     
     def __str__(self):
         return f"[{self.role.value}] {self.content}"
