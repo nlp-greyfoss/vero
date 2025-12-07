@@ -11,6 +11,7 @@ from .exceptions import (
     ToolNotFoundError
 )
 from .chat_openai import ChatOpenAI
+from .agent import Agent
 
 
 
@@ -26,5 +27,6 @@ __all__ = [
     "ToolError",
     "ToolCallError",
     "ToolNotFoundError",
+    "Agent"
 ]
 

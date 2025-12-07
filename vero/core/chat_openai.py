@@ -35,7 +35,10 @@ class ChatOpenAI:
         Raises:
             LLMConfigError: If any of api_key, base_url, or model_name is missing.
         """
+
         self.model_name = model_name or settings.model_name
+        print(f"🤖 Initializing LLM with model: {self.model_name}")
+
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout or getattr(settings, "timeout", None)

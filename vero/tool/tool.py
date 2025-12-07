@@ -88,7 +88,7 @@ def tool(func):
             else str(return_annotation)
         )
 
-    description = func.__doc__ or "No description provided."
+    description = inspect.getdoc(func) or "No description provided."
     name = func.__name__
 
     return Tool(
