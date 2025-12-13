@@ -58,7 +58,7 @@ Follow the format strictly. Do not explain the tool call. Do not wrap the tool c
         tools: Optional[List[Tool]] = None,
         system_prompt: Optional[str] = None,
         max_turns: int = 3,
-    ):
+    ) -> None:
         """
         Initialize SimpleAgent.
 
@@ -151,14 +151,15 @@ Follow the format strictly. Do not explain the tool call. Do not wrap the tool c
         self.add_message(Message.user(user_input))
 
         # 2) ask LLM for reply (llm.generate accepts the history of Message objects)
-        llm_reply = self.llm.generate(self._history)
-        print(f"📤 LLM Raw Reply: {llm_reply}\n")
+        assistant_msg: Message = self.llm.generate(self._history)
+        print(f"📤 LLM Assistant Message: {assistant_msg.content}\n")
 
         # record assistant's raw reply
-        self.add_message(Message.assistant(llm_reply))
+        self.add_message(assistant_msg)
 
         # 3) parse for a tool call
-        has_call, tool_name, params = self._parse_tool_call(llm_reply)
+        content = assistant_msg.content or ""
+        has_call, tool_name, params = self._parse_tool_call(content)
 
         if has_call:
             print("🛠️ Tool call detected → dispatching tool handler.\n")
@@ -166,7 +167,7 @@ Follow the format strictly. Do not explain the tool call. Do not wrap the tool c
 
         # no tool requested → return the assistant reply directly
         print("💬 No tool requested → returning LLM reply.\n")
-        return llm_reply
+        return content
 
     # ------------ Internal Methods ------------ #
 
@@ -218,8 +219,8 @@ Follow the format strictly. Do not explain the tool call. Do not wrap the tool c
         # makes it easier to craft follow-up prompts like "Please answer the user using this tool result."
         self.add_message(Message.user(f"TOOL_RESULT:{result}"))
 
-        # Re-query the LLM so it can produce the final, human-facing answer.
-        final_answer = self.llm.generate(self._history)
-        self.add_message(Message.assistant(final_answer))
+        # Ask LLM for final answer
+        final_msg: Message = self.llm.generate(self._history)
+        self.add_message(final_msg)
 
-        return final_answer
+        return final_msg.content or ""

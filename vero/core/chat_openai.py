@@ -1,4 +1,4 @@
-from typing import Optional, Iterator, List, Union
+from typing import Optional, Iterator, List, Union,Dict, Any
 from openai import OpenAI
 
 from .message import Message
@@ -67,8 +67,10 @@ class ChatOpenAI:
         messages: List[Union[Message, dict]],
         stream: bool = False,
         temperature: Optional[float] = None,
+        tools: Optional[List[dict]] = None,
+        tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
         **kwargs,
-    ) -> Union[str, Iterator[str]]:
+    ) -> Union[Message, Iterator[str]]:
         """
         Generate a response from the LLM, supporting both streaming and full output.
 
@@ -76,10 +78,13 @@ class ChatOpenAI:
             messages: A list of Message objects or dicts representing conversation history.
             stream: If True, return an iterator yielding text chunks as they are generated.
             temperature: Optional override of the default temperature.
+            tools: Optional OpenAI tool schema definitions.
+            tool_choice: Tool selection strategy ("auto", "none", or specific tool).
             **kwargs: Additional generation parameters (e.g., max_tokens).
 
         Returns:
-            str: Complete response if stream=False.
+            Message: Assistant message. If tool calls are present, they are attached to 
+                Message.tool_calls and content may be None.
             Iterator[str]: Streamed response chunks if stream=True.
 
         Raises:
@@ -91,13 +96,27 @@ class ChatOpenAI:
         ]
 
         try:
+            payload = {
+                "model": self.model_name,
+                "messages": messages_dict,
+                "temperature": temperature or self.temperature,
+                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            }
+
+            # Attach tool configuration if provided
+            if tools:
+                payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+
+            # Forward any additional OpenAI parameters
+            for k, v in kwargs.items():
+                if k not in {"temperature", "max_tokens"}:
+                    payload[k] = v
+
             response = self._client.chat.completions.create(
-                model=self.model_name,
-                messages=messages_dict,
-                temperature=temperature or self.temperature,
-                max_tokens=kwargs.get("max_tokens", self.max_tokens),
                 stream=stream,
-                **{k: v for k, v in kwargs.items() if k not in {"temperature", "max_tokens"}},
+                **payload,
             )
 
             if stream:
@@ -109,9 +128,39 @@ class ChatOpenAI:
                         if content:
                             yield content
                 return _stream_generator()
-            else:
-                # Return complete response
-                return response.choices[0].message.content
+            
+            # -----------------------------
+            # Non-streaming: build Message
+            # -----------------------------
+            resp_msg = response.choices[0].message
+            usage = response.usage or {}
+
+            assistant_msg = Message.assistant(
+                content=resp_msg.content,
+                metadata={
+                    "usage": {
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                    }
+                },
+            )
+
+             # Handle tool calls (if any)
+            if resp_msg.tool_calls:
+                assistant_msg.tool_calls = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in resp_msg.tool_calls
+                ]
+
+            return assistant_msg
 
         except Exception as e:
             raise LLMCallError(f"LLM call failed: {str(e)}") from e
