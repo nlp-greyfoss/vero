@@ -1,38 +1,47 @@
-from typing import Dict, Any, List, Union, Self
-from datetime import datetime
+from typing import Dict, Any, Optional, List, Self, Union, Literal
+import time
 from pydantic import BaseModel, Field
-from enum import Enum
 
 
 class Message(BaseModel):
-    class Role(str, Enum):
-        system = "system"
-        user = "user"
-        assistant = "assistant"
-
-    content: Union[str, List[Dict[str, Any]]]
-    role: Role
-    timestamp: datetime = Field(default_factory=datetime.now)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-    @classmethod
-    def new(cls, role: Role, content: str, **kwargs) -> Self:
-        return cls(role=role, content=content, **kwargs)
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
+    role: Literal["system", "user", "assistant", "tool"]
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    timestamp: int = Field(default_factory=lambda: int(time.time()))
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="token counts"
+    )
 
     @classmethod
-    def user(cls, content: str, **kw):
-        return cls(role=Message.Role.user, content=content, **kw)
+    def user(cls, content: str, **kw) -> Self:
+        return cls(role="user", content=content, **kw)
 
     @classmethod
-    def system(cls, content: str, **kw):
-        return cls(role=Message.Role.system, content=content, **kw)
+    def system(cls, content: str, **kw) -> Self:
+        return cls(role="system", content=content, **kw)
 
     @classmethod
-    def assistant(cls, content: str, **kw):
-        return cls(role=Message.Role.assistant, content=content, **kw)
+    def assistant(
+        cls, content: Optional[str] = None, tool_calls: List[dict] = None, **kw
+    ) -> Self:
+        return cls(role="assistant", content=content, tool_calls=tool_calls, **kw)
+
+    @classmethod
+    def tool(cls, content: str, tool_call_id: str, **kw) -> Self:
+        return cls(
+            role="tool",
+            content=content,
+            tool_call_id=tool_call_id,
+            **kw,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"role": self.role.value, "content": self.content}
-    
-    def __str__(self):
-        return f"[{self.role.value}] {self.content}"
+        d = {
+            k: v
+            for k, v in self.__dict__.items()
+            if k not in ("timestamp", "metadata") and v is not None
+        }
+
+        return d

@@ -28,7 +28,7 @@ class Agent(ABC):
         tools: Optional[List[Tool]] = None,
         system_prompt: Optional[str] = None,
         max_turns: int = 3,
-    ):
+    ) -> None:
         """
         Initialize a generic agent.
 

@@ -16,7 +16,7 @@ def test_chat_openai():
     # Full response generation
     # -------------------------
     messages = [Message.user("Who are you?")]
-    response = llm.generate(messages, stream=False)
+    response = llm.generate(messages, stream=False).content
     print("Full response:")
     print(response)
 
