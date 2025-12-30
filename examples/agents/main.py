@@ -1,7 +1,7 @@
 import time
 
 from vero.core import ChatOpenAI, Agent
-from vero.agents import SimpleAgent, OpenAIFunctionAgent
+from vero.agents import SimpleAgent, OpenAIFunctionAgent, ReActAgent
 from vero.tool.buildin import math_evaluate, duckduckgo_search
 from vero.config import settings
 
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     # settings.model_name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     start = time.perf_counter()
     answer = run_agent(
-        OpenAIFunctionAgent,
+        ReActAgent,
         "What is the total box office revenue (in USD) of the top three highest-grossing \
 animated films released worldwide before 2010, and which studios produced each of those three films?",
     )
