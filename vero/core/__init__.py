@@ -12,6 +12,7 @@ from .exceptions import (
 )
 from .chat_openai import ChatOpenAI
 from .agent import Agent
+from .mixins import LLMMixin
 
 
 

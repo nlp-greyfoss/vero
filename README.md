@@ -28,15 +28,15 @@ It provides a clean, extensible abstraction over the OpenAI Python SDK, supporti
 * Configuration via `.env` with sensible defaults
 * Fully testable with `pytest`
 * **Agent system**
-
   * Abstract `Agent` base class
-  * `SimpleAgent`: lightweight TOOL_CALL protocol
+  * `SimpleAgent`: lightweight tool-calling loop
   * `OpenAIFunctionAgent`: OpenAI function calling
+  * `ReActAgent`: step-by-step Thought / Action / Observation loop
+  * `ReWooAgent`: planner / worker / solver pipeline with dependency-aware execution
 * **Tool system**
-
   * Declarative tool definition via decorator
   * OpenAI-compatible function schemas
-  * Built-in tools (math evaluation, DuckDuckGo search)
+  * Built-in tools: `calculate_math_expression`, `duckduckgo_search`, `google_search`, `bocha_search`
   * Easy extension with type annotations
 
 ---
@@ -60,6 +60,8 @@ It provides a clean, extensible abstraction over the OpenAI Python SDK, supporti
 ├── uv.lock
 ├── vero/
 │   ├── agents/
+│   │   ├── react_agent.py
+│   │   ├── rewoo_agent.py
 │   │   ├── openai_function_agent.py
 │   │   └── simple_agent.py
 │   ├── config/
@@ -68,9 +70,12 @@ It provides a clean, extensible abstraction over the OpenAI Python SDK, supporti
 │   │   ├── agent.py         # Base Agent abstraction
 │   │   ├── chat_openai.py   # OpenAI chat wrapper
 │   │   ├── exceptions.py
+│   │   ├── mixins.py
 │   │   └── message.py       # Message abstraction
 │   ├── tool/
 │   │   ├── buildin/
+│   │   │   ├── bocha_search.py
+│   │   │   ├── google_search.py
 │   │   │   ├── ddg_search.py
 │   │   │   └── math_calculator.py
 │   │   └── tool.py          # Tool base class and decorator
@@ -141,6 +146,13 @@ Abstract base class for LLM-powered agents with tool usage.
 * `tool_names`
 * `tool_by_names`
 
+### Built-in Agents
+
+* `SimpleAgent`: simple tool dispatch with a lightweight custom protocol
+* `OpenAIFunctionAgent`: relies on native function calling support
+* `ReActAgent`: iterative reasoning with one tool step at a time
+* `ReWooAgent`: full planning first, then executes evidence calls level by level; independent evidence steps can run in parallel
+
 ---
 
 ### Tool
@@ -170,7 +182,7 @@ Minimum required configuration:
 
 ```dotenv
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
-OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 Copy the example configuration:
@@ -186,6 +198,8 @@ DEBUG=False
 TIMEOUT=60
 MODEL_NAME=Qwen/Qwen3-32B
 TEMPERATURE=0.7
+TAVILY_API_KEY=
+BOCHA_API_KEY=
 ```
 
 All settings are loaded via `Settings` in `vero/config/config.py`.
@@ -233,14 +247,14 @@ for chunk in llm.generate(messages, stream=True):
 import time
 from vero.core import ChatOpenAI
 from vero.agents import OpenAIFunctionAgent
-from vero.tool.buildin import math_evaluate, duckduckgo_search
+from vero.tool.buildin import calculate_math_expression, duckduckgo_search
 
 llm = ChatOpenAI()
 
 agent = OpenAIFunctionAgent(
     name="example-agent",
     llm=llm,
-    tools=[duckduckgo_search, math_evaluate],
+    tools=[duckduckgo_search, calculate_math_expression],
 )
 
 start = time.perf_counter()
@@ -249,6 +263,29 @@ answer = agent.run(
 )
 print(f"Answer: {answer}")
 print(f"Elapsed: {time.perf_counter() - start:.2f}s")
+```
+
+### ReWOO Example
+
+`ReWooAgent` is useful for tasks that can be decomposed into several independent evidence-gathering steps before a final synthesis step. See [examples/agents/main.py](examples/agents/main.py) for a runnable example.
+
+```python
+from vero.core import ChatOpenAI
+from vero.agents import ReWooAgent
+from vero.tool.buildin import duckduckgo_search
+
+llm = ChatOpenAI()
+agent = ReWooAgent(
+    name="rewoo-agent",
+    llm=llm,
+    tools=[duckduckgo_search],
+)
+
+answer = agent.run(
+    "Find the 2025 market capitalization of Microsoft, Apple, Nvidia, Amazon, and Meta. "
+    "Rank them from highest to lowest, and identify which pair has the smallest gap."
+)
+print(answer)
 ```
 
 ---

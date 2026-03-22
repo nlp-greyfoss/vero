@@ -1,0 +1,515 @@
+import re
+from json_repair import loads
+import ast
+from concurrent.futures import ThreadPoolExecutor
+
+import time
+
+from typing import List, Tuple, Dict
+
+from vero.tool import Tool
+from vero.core.message import Message
+from vero.core.chat_openai import ChatOpenAI
+from vero.core.agent import Agent
+from vero.core.exceptions import ToolCallError
+from vero.core.mixins import LLMMixin
+
+
+DEFAULT_PLANER_PROMPT = """
+You are an AI agent who makes step-by-step plans to solve a problem under the help of external tools. 
+For each step, make one plan followed by one tool-call, which will be executed later to retrieve evidence for that step.
+You should store each evidence into a distinct variable #E1, #E2, #E3 ... that can be referred to in later tool-call inputs.  
+
+## Available Tools
+{tool_descriptions}
+
+You can only use one of [{tools}].
+
+## Output Format
+#Plan1: First, search for the projected revenue for Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025. This will provide the necessary data for further analysis.
+#E1: google_search[Projected revenue for Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025]
+
+#Plan2: Once you have the results from #E1, analyze and compare the revenues of these companies to determine which one has the highest revenue in 2025.
+#E2: llm_tool[Based on the data from #E1, compare the revenues and determine which company has the highest revenue in 2025.]
+
+#Plan3: After you have identified the company with the highest revenue from #E2, summarize the projected revenue for each company and highlight the one with the highest revenue in 2025, based on the data retrieved from #E2.
+#E3: llm_tool[Summarize the projected revenues of Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025, highlighting the company with the highest revenue, using the comparison data from #E2.]
+
+Begin!
+Describe your plans with rich details. Each Plan should be followed by only one #E.
+"""
+
+DEFAULT_SOLVER_PROMPT = """
+Solve the following task or problem. To solve the problem, we have made step-by-step Plan and 
+retrieved corresponding Evidence to each Plan. Use them with caution since long evidence might 
+contain irrelevant information.
+
+{plan_evidence}
+
+Now solve the question or task according to provided Evidence above. Respond with the answer 
+directly with no extra words.
+
+Task: {task}
+Response:
+"""
+
+# Match lines like: `#Plan1: do something`
+PLAN_LINE_PATTERN = re.compile(r"^\s*(#Plan\d+)\s*:\s*(.+?)\s*$")
+# Match only the evidence id at the start of a line, e.g. `#E1: ...`
+EVIDENCE_LABEL_PATTERN = re.compile(r"^\s*(#E\d+)\s*:")
+# Match a full evidence assignment and capture both id and tool call.
+EVIDENCE_CALL_PATTERN = re.compile(r"^\s*(#E\d+)\s*:\s*(.+)$")
+# Match evidence references embedded inside tool inputs, such as `#E1`
+EVIDENCE_REF_PATTERN = re.compile(r"#E\d+")
+
+
+class ReWooAgent(LLMMixin, Agent):
+    """
+    ReWOO-style agent that separates the workflow into three phases:
+
+    1. Planner: the LLM produces a set of `#PlanN` steps and `#EN` evidence
+       tool calls.
+    2. Worker: the agent executes evidence tool calls, respecting inter-evidence
+       dependencies such as `#E2` depending on `#E1`.
+    3. Solver: the LLM receives the original plans plus resolved evidences and
+       synthesizes the final answer.
+
+    Compared with ReAct, ReWOO plans the full tool graph up front. That lets us
+    execute independent evidence calls in parallel and keep the final synthesis
+    prompt compact and structured.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        llm: ChatOpenAI,
+        tools: List[Tool],
+        max_turns: int = 3,
+    ) -> None:
+        """
+        Initialize ReWooAgent.
+
+        Args:
+            name: Human-readable identifier for the agent.
+            llm: ChatOpenAI instance used for model inference.
+            tools: Tool instances available to the planner and worker.
+            max_turns: Reserved for future use to align with the base Agent API.
+        """
+        print(f"🚀 Initializing ReWOOAgent `{name}` ...")
+
+        assert tools, "ReWOOAgent must have at least one tool."
+
+        # `LLMMixin` will handle LLM tool creation and addition to tools list
+        super().__init__(
+            name=name,
+            llm=llm,
+            tools=tools,
+            max_turns=max_turns,
+        )
+
+    def run(self, user_input: str) -> str:
+        """
+        Execute the ReWOO pipeline for a single user input.
+
+        The flow is:
+            1. Build the planner prompt and ask the LLM for plans/evidences.
+            2. Parse plan-to-evidence mapping and evidence dependency graph.
+            3. Execute tool calls in dependency order, parallelizing each level.
+            4. Build a solver prompt from plans and resolved evidences.
+            5. Ask the LLM to produce the final answer.
+
+        Args:
+            user_input: Original user request.
+
+        Returns:
+            str: Final answer generated by the solver step.
+        """
+        print(f"\n==============================")
+        print(f"👤 User Input: {user_input}")
+        print("==============================\n")
+
+        # 1. Build the planner prompt from the currently available tools.
+        planner_prompt = DEFAULT_PLANER_PROMPT.format(
+            tool_descriptions=self.tool_descriptions,
+            tools=self.tool_names,
+        )
+
+        # 2. Build planner messages ephemerally. `_history` should only contain
+        # user inputs and final assistant outputs from completed turns.
+        planner_messages = [Message.system(planner_prompt), *self._history]
+        planner_messages.append(Message.user(user_input))
+
+        # 3. Generate planner output and parse the plan/evidence structure.
+        print("🧠 Generating planner output...")
+        planner_output = self.llm.generate(planner_messages).content
+        print(f"📤 LLM Planner Message:\n{planner_output}\n")
+
+        print("🔍 Parsing planner output into plan/evidence mapping...")
+        plan_to_evidence, plans = self._group_evidences_by_plan(planner_output)
+        print(f"🔍 Plan Map: {plan_to_evidence}")
+        print(f"🔍 Plans: {plans}")
+
+        print("🧩 Parsing evidence tool calls and dependency levels...")
+        evidence_to_call, levels = self._build_evidence_graph(planner_output)
+        print(f"🔍 Evidence to Call: {evidence_to_call}")
+        print(f"🔍 Levels: {levels}")
+
+        # 4. Execute the worker phase. Evidences in the same level can run in parallel.
+        print("👷 Resolving worker evidences...")
+        worker_evidences = self._execute_evidence_levels(evidence_to_call, levels)
+        print(f"🔍 Worker Evidences: {worker_evidences}")
+
+        # 5. Build the per-run scratchpad for the solver by interleaving each
+        # plan with its single resolved evidence. This scratchpad is ephemeral
+        # and not stored in `_history`.
+        scratchpad = ""
+        for plan_name, evidence_name in plan_to_evidence.items():
+            scratchpad += f"{plan_name}: {plans[plan_name]}\n"
+            scratchpad += f"{evidence_name}: {worker_evidences[evidence_name]}\n"
+
+        print(f"🔍 Scratchpad:\n{scratchpad}\n")
+
+        # 6. Ask the solver LLM to synthesize the final answer from evidence.
+        solver_prompt = DEFAULT_SOLVER_PROMPT.format(
+            plan_evidence=scratchpad, task=user_input
+        )
+
+        print("🧠 Generating solver output...")
+        solver_messages = [Message.system("You are a helpful AI assistant.")]
+        solver_messages.extend(self._history)
+        solver_messages.append(Message.user(solver_prompt))
+
+        solver_output = self.llm.generate(solver_messages).content
+        print(f"📤 LLM Solver Message:\n{solver_output}\n")
+        print(f"🗒️ Scratchpad (current run only):\n{scratchpad}")
+
+        # 7. Persist only the conversational boundary: user input and final answer.
+        self.add_message(Message.user(user_input))
+        self.add_message(Message.assistant(solver_output))
+        return solver_output
+
+    def _group_evidences_by_plan(
+        self, plan_output: str
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """
+        Parse planner output into:
+            1. `plan_to_evidence`: the single `#E*` assigned to each `#Plan*`
+            2. `plans`: the text content of each `#Plan*`
+
+        This parser assumes the planner follows a strict alternating format:
+            #Plan1: ...
+            #E1: ...
+            #Plan2: ...
+            #E2: ...
+
+        Implementation rule:
+            - when a `#Plan*` line is seen, it becomes the current pending plan
+            - the next `#E*` line is attached to that plan
+            - after attaching one evidence, the pending plan is cleared
+
+        Args:
+            plan_output: Raw planner output from the LLM.
+
+        Returns:
+            Tuple[Dict[str, str], Dict[str, str]]:
+                A tuple of `(plan_to_evidence, plans)`.
+        """
+        print("🔍 Parsing #Plan to #E mapping...")
+
+        # Plan Id -> attached evidence id
+        plan_to_evidences: Dict[str, str] = {}
+        # Plan Id -> Plan content
+        plans: Dict[str, str] = {}
+
+        # The current plan waiting for its single evidence line.
+        plan_name = ""
+
+        for raw_line in plan_output.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            plan_match = PLAN_LINE_PATTERN.match(line)
+            if plan_match:
+                plan_name, plan_text = (
+                    plan_match.group(1).strip(),
+                    plan_match.group(2).strip(),
+                )
+                plans[plan_name] = plan_text
+                print(f"📝 Registered {plan_name}: {plans[plan_name]}")
+                continue
+
+            evidence_match = EVIDENCE_LABEL_PATTERN.match(line)
+            if evidence_match:
+                evidence_name = evidence_match.group(1).strip()
+                if plan_name:
+                    plan_to_evidences[plan_name] = evidence_name
+                    print(f"🔗 Attached {evidence_name} -> {plan_name}")
+                    # Clear the pending plan so each plan can consume only one evidence.
+                    plan_name = ""
+
+        return plan_to_evidences, plans
+
+    def _build_evidence_graph(
+        self, planner_response: str
+    ) -> Tuple[Dict[str, str], List[List[str]]]:
+        """
+        Parse evidence assignments, build their dependency graph, and compute
+        topological execution levels.
+
+        Each evidence line is expected to look like:
+            #E1: some_tool[input]
+
+        A dependency is detected when one evidence call references another
+        evidence variable such as `#E1` or `#E2`.
+
+        The returned `levels` list is a topological layering of the evidence
+        DAG, where each inner list can be executed in parallel.
+
+        Args:
+            planner_response: Raw planner output.
+
+        Returns:
+            Tuple[Dict[str, str], List[List[str]]]:
+                - evidence_to_call: `#E -> tool_call`
+                - levels: topological execution levels of the evidence graph
+        """
+        print("🔍 Building evidence dependency graph...")
+        evidence_to_call: Dict[str, str] = {}
+
+        lines = planner_response.splitlines()
+        for line in lines:
+            matched = EVIDENCE_CALL_PATTERN.match(line)
+            if matched:
+                evidence_name, tool_call = (
+                    matched.group(1).strip(),
+                    matched.group(2).strip(),
+                )
+                evidence_to_call[evidence_name] = tool_call
+                print(f"📝 Registered {evidence_name}: {tool_call}")
+
+        # Build the dependency graph by reading referenced evidence variables.
+        dependencies: Dict[str, set[str]] = {}
+        for e, call in evidence_to_call.items():
+            deps = set(EVIDENCE_REF_PATTERN.findall(call))
+            deps.discard(e)  # Ignore accidental self-reference.
+            dependencies[e] = deps
+            print(f"🔗 Dependencies for {e}: {sorted(deps)}")
+
+        # Topological layering: each level contains evidences whose dependencies
+        # have already been resolved by previous levels.
+        levels: List[List[str]] = []
+        remaining = set(evidence_to_call.keys())
+        resolved: set[str] = set()
+        while remaining:
+            current_level = [e for e in remaining if dependencies[e].issubset(resolved)]
+            if not current_level:
+                print(f"❌ Cycle detected while sorting evidences: {dependencies}")
+                raise ValueError("Cycle detected in dependencies.")
+
+            print(f"📚 Execution level resolved: {current_level}")
+            levels.append(current_level)
+            remaining -= set(current_level)
+            resolved.update(current_level)
+
+        return evidence_to_call, levels
+
+    def _execute_evidence_levels(
+        self, planner_evidences: Dict[str, str], evidences_levels: List[List[str]]
+    ) -> Dict[str, str]:
+        """
+        Execute evidence tool calls level by level.
+
+        Each level comes from `_build_evidence_graph`. Evidences in the same
+        level have no unresolved dependencies, so they can run in parallel.
+        Different levels are executed sequentially to preserve dependency order.
+
+        Args:
+            planner_evidences: Mapping from `#E` to raw tool call strings.
+            evidences_levels: Topological execution levels of the evidence graph.
+
+        Returns:
+            Dict[str, str]: Resolved evidence content for every `#E`.
+        """
+        print("👷 Starting worker execution...")
+        worker_evidences: Dict[str, str] = {}
+        with ThreadPoolExecutor() as executor:
+            for level in evidences_levels:
+                futures = [
+                    executor.submit(
+                        self._handle_tool_call,
+                        evidence_name,
+                        planner_evidences,
+                        worker_evidences,
+                    )
+                    for evidence_name in level
+                ]
+
+                if len(futures) > 1:
+                    print(f"🔄 Running tasks {level} in parallel.")
+                else:
+                    print(f"▶️ Running task {level[0]}")
+
+                for future in futures:
+                    evidence_name, evidence_text = future.result()
+                    worker_evidences[evidence_name] = evidence_text
+                    print(f"📥 Evidence resolved {evidence_name}: {evidence_text}")
+
+        return worker_evidences
+
+    def _handle_tool_call(
+        self,
+        e: str,
+        planner_evidences: Dict[str, str],
+        worker_evidences: Dict[str, str],
+    ) -> Tuple[str, str]:
+        """
+        Resolve a single evidence entry.
+
+        This method performs three steps:
+            1. Parse `tool_name[tool_input]`.
+            2. Substitute any `#E*` placeholders with resolved evidence values.
+            3. Execute the target tool and return the resulting evidence.
+
+        Args:
+            e: Evidence variable name such as `#E2`.
+            planner_evidences: Original evidence-to-tool-call mapping.
+            worker_evidences: Already resolved evidence results.
+
+        Returns:
+            Tuple[str, str]: `(evidence_name, resolved_text)`
+        """
+        print(f"⚙️ Handling worker task `{e}` ...")
+        tool_call = planner_evidences[e].strip()
+        print(f"🧾 Raw tool call for `{e}`: {tool_call}")
+
+        if "[" not in tool_call or not tool_call.endswith("]"):
+            print(f"ℹ️ `{e}` is treated as direct text evidence.")
+            return e, tool_call
+
+        tool_name, raw_tool_input = tool_call.split("[", 1)
+        tool_name = tool_name.strip()
+        tool_input = raw_tool_input[:-1].strip()
+
+        # Replace planner placeholders like #E1 with actual resolved evidence text.
+        for var in EVIDENCE_REF_PATTERN.findall(tool_input):
+            tool_input = tool_input.replace(var, worker_evidences.get(var, ""))
+        print(f"🪄 Resolved tool input for `{e}`: {tool_input}")
+
+        if tool_name not in self.tool_by_names:
+            error = f"Unknown tool: {tool_name}"
+            print(f"❌ {error}")
+            return e, error
+
+        tool = self.tool_by_names[tool_name]
+
+        try:
+            print(f"🔧 Executing tool `{tool_name}` with input: {tool_input}")
+            start = time.perf_counter()
+            parsed_input = self._parse_tool_input(tool_input)
+            evidence = self._invoke_tool(tool, parsed_input, tool_input)
+            print(
+                f"✅ Tool `{tool_name}` executed successfully with result: {evidence} "
+                f"| ⏱️ Cost: {time.perf_counter() - start: .1f}s"
+            )
+            return e, evidence
+        except Exception as exc:
+            print(f"💥 Tool `{tool_name}` execution failed: {exc}")
+            return e, f"Error: {exc}"
+
+    def _parse_tool_input(self, tool_input: str):
+        """
+        Parse a tool input into a structured Python value when possible.
+
+        ReWOO planner outputs often produce:
+            - plain strings
+            - JSON objects
+            - Python-literal-like arrays/objects
+
+        This parser tries JSON repair first, then `ast.literal_eval`, and falls
+        back to the raw string when the input should be treated as plain text.
+
+        Returns:
+            A parsed dict/list when structured input is detected, otherwise the
+            original string (or an empty dict for empty input).
+        """
+        print(f"🔍 Parsing tool input: {tool_input}")
+        if not tool_input:
+            print("📦 Empty tool input detected. Using empty dict.")
+            return {}
+
+        stripped = tool_input.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed = loads(stripped)
+                print("📦 Tool input parsed via JSON repair.")
+                return parsed
+            except Exception as json_exc:
+                print(f"⚠️ JSON repair parsing failed: {json_exc}")
+                try:
+                    parsed = ast.literal_eval(stripped)
+                    print("📦 Tool input parsed via Python literal_eval.")
+                    return parsed
+                except Exception as literal_exc:
+                    print(f"⚠️ literal_eval parsing failed: {literal_exc}")
+                    print("📦 Falling back to raw string input.")
+                    return tool_input
+
+        print("📦 Treating tool input as plain string.")
+        return tool_input
+
+    def _invoke_tool(self, tool: Tool, parsed_input, raw_tool_input: str) -> str:
+        """
+        Invoke a tool with the most suitable calling convention.
+
+        Supported forms:
+            - dict -> keyword arguments
+            - list -> positional arguments
+            - scalar/string -> single raw argument when the tool signature allows it
+
+        Args:
+            tool: Target tool instance.
+            parsed_input: Structured input returned by `_parse_tool_input`.
+            raw_tool_input: Original raw string inside `tool_name[...]`.
+
+        Returns:
+            str: Tool execution result.
+
+        Raises:
+            ToolCallError: If a multi-argument tool receives only an unstructured string.
+        """
+        if isinstance(parsed_input, dict):
+            print(f"📦 Invoking `{tool.name}` with keyword args: {parsed_input}")
+            return tool(**parsed_input)
+
+        if isinstance(parsed_input, list):
+            print(f"📦 Invoking `{tool.name}` with positional args: {parsed_input}")
+            return tool(*parsed_input)
+
+        non_self_params = [
+            param
+            for param in tool.signature.parameters.values()
+            if param.name != "self"
+        ]
+        required_params = [
+            param
+            for param in non_self_params
+            if param.default is param.empty
+            and param.kind
+            in (
+                param.POSITIONAL_ONLY,
+                param.POSITIONAL_OR_KEYWORD,
+                param.KEYWORD_ONLY,
+            )
+        ]
+
+        if len(non_self_params) <= 1 or len(required_params) <= 1:
+            print(f"📦 Invoking `{tool.name}` with raw string input.")
+            return tool(raw_tool_input)
+
+        print(
+            f"❌ Tool `{tool.name}` requires structured params but received raw input: "
+            f"{raw_tool_input}"
+        )
+        raise ToolCallError(
+            f"Tool `{tool.name}` expects structured parameters, got: {raw_tool_input}"
+        )
