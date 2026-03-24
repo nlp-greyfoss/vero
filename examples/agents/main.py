@@ -67,7 +67,7 @@ def test_single_turn_agent(agent_class: Agent, max_turns=10):
     start = time.perf_counter()
     answer = run_agent(
         agent_class,
-        "Find the 2025 market capitalization of Microsoft, Apple, Nvidia, Amazon, and Meta. Rank them from highest to lowest, and identify which pair has the smallest gap.",
+        "Find the headquarters city of Microsoft, Apple, Amazon, Nvidia, and Meta, then identify which city has the largest population.",
         max_turns=max_turns,
     )
     print(f"🏁 Final LLM Answer: {answer}\n")

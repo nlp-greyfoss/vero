@@ -16,9 +16,8 @@ from vero.core.mixins import LLMMixin
 
 
 DEFAULT_PLANER_PROMPT = """
-You are an AI agent who makes step-by-step plans to solve a problem under the help of external tools. 
-For each step, make one plan followed by one tool-call, which will be executed later to retrieve evidence for that step.
-You should store each evidence into a distinct variable #E1, #E2, #E3 ... that can be referred to in later tool-call inputs.  
+You are a planning agent that decomposes a task into small, executable steps with external tools.
+Your output will be executed by another system, so it must be explicit, structured, and directly executable.
 
 ## Available Tools
 {tool_descriptions}
@@ -26,17 +25,62 @@ You should store each evidence into a distinct variable #E1, #E2, #E3 ... that c
 You can only use one of [{tools}].
 
 ## Output Format
-#Plan1: First, search for the projected revenue for Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025. This will provide the necessary data for further analysis.
-#E1: google_search[Projected revenue for Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025]
+For each step, write exactly one `#Plan` followed by exactly one `#E`.
+Each `#E` must store its result in a distinct variable such as `#E1`, `#E2`, `#E3`, which may be referenced by later steps.
 
-#Plan2: Once you have the results from #E1, analyze and compare the revenues of these companies to determine which one has the highest revenue in 2025.
-#E2: llm_tool[Based on the data from #E1, compare the revenues and determine which company has the highest revenue in 2025.]
+#Plan1: <describe the first step>
+#E1: <tool_name>[<tool input>]
+#Plan2: <describe the next step>
+#E2: <tool_name>[<tool input, which may reference #E1 if needed>]
 
-#Plan3: After you have identified the company with the highest revenue from #E2, summarize the projected revenue for each company and highlight the one with the highest revenue in 2025, based on the data retrieved from #E2.
-#E3: llm_tool[Summarize the projected revenues of Microsoft, Apple, Google, OpenAI, Meta, and Amazon in 2025, highlighting the company with the highest revenue, using the comparison data from #E2.]
+Continue in the same format.
 
-Begin!
-Describe your plans with rich details. Each Plan should be followed by only one #E.
+## Planning Rules
+1. Decompose the task into the smallest useful sub-tasks.
+2. Each search step should answer only one sub-task and focus on one entity, one attribute, or one question.
+3. Do not combine multiple entities or unrelated questions in one search query.
+4. Prefer independent search steps first so they can run in parallel.
+5. Use `llm_tool` only to extract, normalize, or clean key facts from noisy evidence.
+6. For comparison tasks, prefer one extraction step per evidence item rather than one global `llm_tool` step.
+7. Each extraction step should return one short clean result with only the key fact needed later.
+8. Leave final comparison, ranking, synthesis, and answer writing to the solver whenever possible.
+9. If the final answer depends on information that must be reached through intermediate facts, keep planning until those later facts are collected.
+10. Once enough clean evidence has been collected, stop planning.
+11. Do not add a final global `llm_tool` step for ranking, comparison, or summary if the solver can answer directly from the extracted facts.
+12. If a later step depends on earlier results, reference the needed `#E` variables directly in the tool input.
+13. If a later attribute must be gathered for multiple entities, prefer one search step per entity unless a single search can clearly return all needed values.
+
+## Example
+Task: Find which university Alan Turing and Grace Hopper attended, then identify which of those universities was founded earlier.
+
+#Plan1: Search for Alan Turing's university.
+#E1: google_search[Alan Turing university]
+
+#Plan2: Extract Alan Turing's university from #E1 as one clean fact.
+#E2: llm_tool[From #E1, extract Alan Turing's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+
+#Plan3: Search for Grace Hopper's university.
+#E3: google_search[Grace Hopper university]
+
+#Plan4: Extract Grace Hopper's university from #E3 as one clean fact.
+#E4: llm_tool[From #E3, extract Grace Hopper's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+
+#Plan5: Search for the founding year of the university in #E2.
+#E5: google_search[founding year of #E2]
+
+#Plan6: Extract the founding year from #E5 as one clean fact.
+#E6: llm_tool[From #E5, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+
+#Plan7: Search for the founding year of the university in #E4.
+#E7: google_search[founding year of #E4]
+
+#Plan8: Extract the founding year from #E7 as one clean fact.
+#E8: llm_tool[From #E7, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+
+Stop here because #E6 and #E8 already provide enough clean evidence for the solver.
+
+## Now Begin
+Make as few plans as possible while still collecting all information needed to answer the task correctly.
 """
 
 DEFAULT_SOLVER_PROMPT = """
@@ -333,7 +377,17 @@ class ReWooAgent(LLMMixin, Agent):
         print("👷 Starting worker execution...")
         worker_evidences: Dict[str, str] = {}
         with ThreadPoolExecutor() as executor:
-            for level in evidences_levels:
+            for level_idx, level in enumerate(evidences_levels, start=1):
+                print(
+                    f"🧱 Executing level {level_idx}/{len(evidences_levels)}: {level}"
+                )
+                level_start = time.perf_counter()
+
+                if len(level) > 1:
+                    print(f"🔄 Submitting {len(level)} tasks for parallel execution.")
+                else:
+                    print(f"▶️ Submitting task {level[0]}.")
+
                 futures = [
                     executor.submit(
                         self._handle_tool_call,
@@ -344,15 +398,15 @@ class ReWooAgent(LLMMixin, Agent):
                     for evidence_name in level
                 ]
 
-                if len(futures) > 1:
-                    print(f"🔄 Running tasks {level} in parallel.")
-                else:
-                    print(f"▶️ Running task {level[0]}")
-
                 for future in futures:
                     evidence_name, evidence_text = future.result()
                     worker_evidences[evidence_name] = evidence_text
                     print(f"📥 Evidence resolved {evidence_name}: {evidence_text}")
+
+                print(
+                    f"⏱️ Level {level_idx}/{len(evidences_levels)} finished in "
+                    f"{time.perf_counter() - level_start: .1f}s"
+                )
 
         return worker_evidences
 
