@@ -16,82 +16,76 @@ from vero.core.mixins import LLMMixin
 
 
 DEFAULT_PLANER_PROMPT = """
-You are a planning agent that decomposes a task into small, executable steps with external tools.
-Your output will be executed by another system, so it must be explicit, structured, and directly executable.
+You are a planning agent. Produce executable ReWOO steps.
 
 ## Available Tools
 {tool_descriptions}
 
 You can only use one of [{tools}].
 
-## Output Format
-For each step, write exactly one `#Plan` followed by exactly one `#E`.
-Each `#E` must store its result in a distinct variable such as `#E1`, `#E2`, `#E3`, which may be referenced by later steps.
+## Hard Rules
+1. For factual questions, do not rely on model memory. Use tools to collect facts.
+2. Do not guess. If a required fact is missing, add a tool step to fetch it.
+3. Keep any user time constraint (year/date) unchanged.
+4. For comparison questions, collect the compared attribute for every entity before stopping.
+5. Use `llm_tool` for extraction/normalization from noisy evidence.
+6. Use `calculate_math_expression` only when math is complex or error-prone.
+7. If using `calculate_math_expression`, its inputs must be numeric-only.
+8. Each `google_search` step should target one entity and one attribute only.
+9. Do not issue one aggregated search for multiple entities when per-entity values are required for comparison.
 
+## Output Format
+Write exactly one `#Plan` and one `#E` per step:
 #Plan1: <describe the first step>
 #E1: <tool_name>[<tool input>]
 #Plan2: <describe the next step>
 #E2: <tool_name>[<tool input, which may reference #E1 if needed>]
 
-Continue in the same format.
-
-## Planning Rules
-1. Decompose the task into the smallest useful sub-tasks.
-2. Each search step should answer only one sub-task and focus on one entity, one attribute, or one question.
-3. Do not combine multiple entities or unrelated questions in one search query.
-4. Prefer independent search steps first so they can run in parallel.
-5. Use `llm_tool` only to extract, normalize, or clean key facts from noisy evidence.
-6. For comparison tasks, prefer one extraction step per evidence item rather than one global `llm_tool` step.
-7. Each extraction step should return one short clean result with only the key fact needed later.
-8. Leave final comparison, ranking, synthesis, and answer writing to the solver whenever possible.
-9. If the final answer depends on information that must be reached through intermediate facts, keep planning until those later facts are collected.
-10. Once enough clean evidence has been collected, stop planning.
-11. Do not add a final global `llm_tool` step for ranking, comparison, or summary if the solver can answer directly from the extracted facts.
-12. If a later step depends on earlier results, reference the needed `#E` variables directly in the tool input.
-13. If a later attribute must be gathered for multiple entities, prefer one search step per entity unless a single search can clearly return all needed values.
-
 ## Example
-Task: Find which university Alan Turing and Grace Hopper attended, then identify which of those universities was founded earlier.
+Task: Find which university Alan Turing and Grace Hopper attended, then identify which university was founded earlier.
 
-#Plan1: Search for Alan Turing's university.
+#Plan1: Search Alan Turing's university.
 #E1: google_search[Alan Turing university]
 
-#Plan2: Extract Alan Turing's university from #E1 as one clean fact.
-#E2: llm_tool[From #E1, extract Alan Turing's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+#Plan2: Extract Alan Turing's university as one clean fact.
+#E2: llm_tool[From #E1, extract Alan Turing's university. Return one concise normalized fact.]
 
-#Plan3: Search for Grace Hopper's university.
+#Plan3: Search Grace Hopper's university.
 #E3: google_search[Grace Hopper university]
 
-#Plan4: Extract Grace Hopper's university from #E3 as one clean fact.
-#E4: llm_tool[From #E3, extract Grace Hopper's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+#Plan4: Extract Grace Hopper's university as one clean fact.
+#E4: llm_tool[From #E3, extract Grace Hopper's university. Return one concise normalized fact.]
 
-#Plan5: Search for the founding year of the university in #E2.
+#Plan5: Search founding year of the university in #E2.
 #E5: google_search[founding year of #E2]
 
-#Plan6: Extract the founding year from #E5 as one clean fact.
-#E6: llm_tool[From #E5, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+#Plan6: Extract university and founding year from #E5.
+#E6: llm_tool[From #E5, extract one concise university-founding-year fact.]
 
-#Plan7: Search for the founding year of the university in #E4.
+#Plan7: Search founding year of the university in #E4.
 #E7: google_search[founding year of #E4]
 
-#Plan8: Extract the founding year from #E7 as one clean fact.
-#E8: llm_tool[From #E7, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+#Plan8: Extract university and founding year from #E7.
+#E8: llm_tool[From #E7, extract one concise university-founding-year fact.]
 
-Stop here because #E6 and #E8 already provide enough clean evidence for the solver.
+Stop here because #E6 and #E8 provide enough evidence for solver-side comparison.
 
 ## Now Begin
-Make as few plans as possible while still collecting all information needed to answer the task correctly.
+Use as few steps as possible while keeping evidence complete.
 """
 
 DEFAULT_SOLVER_PROMPT = """
-Solve the following task or problem. To solve the problem, we have made step-by-step Plan and 
-retrieved corresponding Evidence to each Plan. Use them with caution since long evidence might 
-contain irrelevant information.
+Solve the task using only the evidence below.
 
 {plan_evidence}
 
-Now solve the question or task according to provided Evidence above. Respond with the answer 
-directly with no extra words.
+Rules:
+- Use only evidence from this run.
+- Do not invent facts or use prior knowledge.
+- If required facts are missing, reply: insufficient evidence.
+- Simple comparison/arithmetic from evidence is allowed.
+
+Respond directly.
 
 Task: {task}
 Response:
