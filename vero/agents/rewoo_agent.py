@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from json_repair import loads
 import ast
 from concurrent.futures import ThreadPoolExecutor
@@ -16,84 +17,91 @@ from vero.core.mixins import LLMMixin
 
 
 DEFAULT_PLANER_PROMPT = """
-You are a planning agent that decomposes a task into small, executable steps with external tools.
-Your output will be executed by another system, so it must be explicit, structured, and directly executable.
+You are a planning agent. Decompose the task into executable steps using the available tools.
+Your output is parsed and executed by another system — keep it strictly structured.
+
+Current date: {current_date}. Use this if needed.
 
 ## Available Tools
 {tool_descriptions}
 
-You can only use one of [{tools}].
+Use only: [{tools}]
 
 ## Output Format
-For each step, write exactly one `#Plan` followed by exactly one `#E`.
-Each `#E` must store its result in a distinct variable such as `#E1`, `#E2`, `#E3`, which may be referenced by later steps.
+Each step is exactly one `#PlanN` line followed by exactly one `#EN` line.
+Never write multiple `#E` lines under one `#Plan`. No comments or extra text after the closing `]`.
 
-#Plan1: <describe the first step>
-#E1: <tool_name>[<tool input>]
-#Plan2: <describe the next step>
-#E2: <tool_name>[<tool input, which may reference #E1 if needed>]
+#Plan1: <describe the step>
+#E1: <tool_name>[<input>]
+#Plan2: <describe the step>
+#E2: <tool_name>[<input, may reference #E1>]
 
-Continue in the same format.
-
-## Planning Rules
-1. Decompose the task into the smallest useful sub-tasks.
-2. Each search step should answer only one sub-task and focus on one entity, one attribute, or one question.
-3. Do not combine multiple entities or unrelated questions in one search query.
-4. Prefer independent search steps first so they can run in parallel.
-5. Use `llm_tool` only to extract, normalize, or clean key facts from noisy evidence.
-6. For comparison tasks, prefer one extraction step per evidence item rather than one global `llm_tool` step.
-7. Each extraction step should return one short clean result with only the key fact needed later.
-8. Leave final comparison, ranking, synthesis, and answer writing to the solver whenever possible.
-9. If the final answer depends on information that must be reached through intermediate facts, keep planning until those later facts are collected.
-10. Once enough clean evidence has been collected, stop planning.
-11. Do not add a final global `llm_tool` step for ranking, comparison, or summary if the solver can answer directly from the extracted facts.
-12. If a later step depends on earlier results, reference the needed `#E` variables directly in the tool input.
-13. If a later attribute must be gathered for multiple entities, prefer one search step per entity unless a single search can clearly return all needed values.
+## Rules
+1. One entity per step — for both search and extraction. For N entities, write N separate Plan+E pairs.
+   Never batch multiple entities into one `google_search` or one `llm_tool` call.
+2. Place independent steps before dependent ones so they can run in parallel.
+3. Use `llm_tool` only to extract a single key fact from noisy evidence — never to write the final answer.
+   When the result feeds into `calculate_math_expression`, ask for a plain number
+   (e.g. "Return only the numeric value in billions, no symbols or text.").
+4. `calculate_math_expression` supports arithmetic and functions like `max()`, `min()`.
+   Do NOT use Python methods or indexing (`.split()`, `int()`, `[0]`) inside tool inputs —
+   only plain arithmetic expressions and math functions are valid.
+5. Do NOT use it for boolean comparisons or ranking decisions — the Solver handles those.
+6. The Solver cannot fetch new data. Collect every fact the task needs before stopping.
 
 ## Example
-Task: Find which university Alan Turing and Grace Hopper attended, then identify which of those universities was founded earlier.
-
-#Plan1: Search for Alan Turing's university.
+#Plan1: Search Alan Turing's university.
 #E1: google_search[Alan Turing university]
+#Plan2: Extract university name.
+#E2: llm_tool[From #E1, extract Alan Turing's university. Return only the name.]
+#Plan3: Search founding year of that university.
+#E3: google_search[founding year of #E2]
+#Plan4: Extract founding year as a plain integer.
+#E4: llm_tool[From #E3, extract the founding year. Return only the 4-digit year, no other text.]
+#Plan5: Compute years since founding.
+#E5: calculate_math_expression[2026 - #E4]
 
-#Plan2: Extract Alan Turing's university from #E1 as one clean fact.
-#E2: llm_tool[From #E1, extract Alan Turing's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+## Pitfalls
 
-#Plan3: Search for Grace Hopper's university.
-#E3: google_search[Grace Hopper university]
+**Any `#E` that feeds into `calculate_math_expression` must contain exactly one plain number.**
+If you use `llm_tool` to extract from multiple sources at once, its output will be multi-line text
+that `calculate_math_expression` cannot parse. This is the most common failure — avoid it:
 
-#Plan4: Extract Grace Hopper's university from #E3 as one clean fact.
-#E4: llm_tool[From #E3, extract Grace Hopper's university. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
+BAD — `#E6` returns a paragraph; `2026 - #E6` fails with a syntax error:
+```
+#E6: llm_tool[From #E1, #E2, #E3, #E4, #E5, extract birth years. Return as a list.]
+#E7: calculate_math_expression[2026 - #E6]
+```
+GOOD — each `#E` holds a single number; arithmetic works cleanly:
+```
+#E6: llm_tool[From #E1, extract 周星驰's birth year. Return only the 4-digit year, no other text.]
+#E7: llm_tool[From #E2, extract 陈道明's birth year. Return only the 4-digit year, no other text.]
+...
+#E11: calculate_math_expression[2026 - #E6]
+#E12: calculate_math_expression[2026 - #E7]
+...
+#E16: calculate_math_expression[max(#E11, #E12, #E13, #E14, #E15) - min(#E11, #E12, #E13, #E14, #E15)]
+```
 
-#Plan5: Search for the founding year of the university in #E2.
-#E5: google_search[founding year of #E2]
-
-#Plan6: Extract the founding year from #E5 as one clean fact.
-#E6: llm_tool[From #E5, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
-
-#Plan7: Search for the founding year of the university in #E4.
-#E7: google_search[founding year of #E4]
-
-#Plan8: Extract the founding year from #E7 as one clean fact.
-#E8: llm_tool[From #E7, extract the university and its founding year. Return only one short normalized line with the entity, the extracted fact, and any qualifier needed for correct comparison later.]
-
-Stop here because #E6 and #E8 already provide enough clean evidence for the solver.
+Additional pitfalls:
+- **Python syntax in tool inputs**: `#E6.split(',')[0]`, `int(#E6)`, `#E6[0]` — NOT supported.
+  `#E` variables are substituted as plain text; only arithmetic operators and math functions work.
+- **Aggregating computed #E variables via llm_tool**: if values are already in `#E11`–`#E15`, reference them directly —
+  `calculate_math_expression[max(#E11, #E12, #E13, #E14, #E15) - min(#E11, #E12, #E13, #E14, #E15)]`
+  Do NOT route them through `llm_tool` first; the substituted text won't form a valid expression.
 
 ## Now Begin
-Make as few plans as possible while still collecting all information needed to answer the task correctly.
+Make as few plans as possible while still collecting all needed information.
 """
 
 DEFAULT_SOLVER_PROMPT = """
-Solve the following task or problem. To solve the problem, we have made step-by-step Plan and 
-retrieved corresponding Evidence to each Plan. Use them with caution since long evidence might 
-contain irrelevant information.
+Use the step-by-step plans and retrieved evidence below to answer the task.
+Evidence may contain noise — focus on the facts directly relevant to the question.
 
 {plan_evidence}
 
-Now solve the question or task according to provided Evidence above. Respond with the answer 
-directly with no extra words.
-
 Task: {task}
+Answer concisely in natural language. Format large numbers readably (e.g. "$957 billion" not "957000000000.0").
 Response:
 """
 
@@ -107,7 +115,7 @@ EVIDENCE_CALL_PATTERN = re.compile(r"^\s*(#E\d+)\s*:\s*(.+)$")
 EVIDENCE_REF_PATTERN = re.compile(r"#E\d+")
 
 
-class ReWooAgent(LLMMixin, Agent):
+class ReWOOAgent(LLMMixin, Agent):
     """
     ReWOO-style agent that separates the workflow into three phases:
 
@@ -176,6 +184,7 @@ class ReWooAgent(LLMMixin, Agent):
         planner_prompt = DEFAULT_PLANER_PROMPT.format(
             tool_descriptions=self.tool_descriptions,
             tools=self.tool_names,
+            current_date=date.today().isoformat(),
         )
 
         # 2. Build planner messages ephemerally. `_history` should only contain
@@ -321,15 +330,36 @@ class ReWooAgent(LLMMixin, Agent):
         evidence_to_call: Dict[str, str] = {}
 
         lines = planner_response.splitlines()
-        for line in lines:
+        index = 0
+        total = len(lines)
+        while index < total:
+            line = lines[index]
             matched = EVIDENCE_CALL_PATTERN.match(line)
-            if matched:
-                evidence_name, tool_call = (
-                    matched.group(1).strip(),
-                    matched.group(2).strip(),
-                )
-                evidence_to_call[evidence_name] = tool_call
-                print(f"📝 Registered {evidence_name}: {tool_call}")
+            if not matched:
+                index += 1
+                continue
+
+            evidence_name = matched.group(1).strip()
+            first_chunk = matched.group(2).rstrip()
+
+            # Support multi-line tool call blocks, e.g.:
+            #   #E3: python_repl[
+            #   x = 1
+            #   print(x)
+            #   ]
+            call_parts = [first_chunk]
+            bracket_balance = first_chunk.count("[") - first_chunk.count("]")
+
+            while bracket_balance > 0 and index + 1 < total:
+                index += 1
+                next_line = lines[index]
+                call_parts.append(next_line.rstrip())
+                bracket_balance += next_line.count("[") - next_line.count("]")
+
+            tool_call = "\n".join(call_parts).strip()
+            evidence_to_call[evidence_name] = tool_call
+            print(f"📝 Registered {evidence_name}: {tool_call}")
+            index += 1
 
         # Build the dependency graph by reading referenced evidence variables.
         dependencies: Dict[str, set[str]] = {}
@@ -435,6 +465,13 @@ class ReWooAgent(LLMMixin, Agent):
         print(f"⚙️ Handling worker task `{e}` ...")
         tool_call = planner_evidences[e].strip()
         print(f"🧾 Raw tool call for `{e}`: {tool_call}")
+
+        # Strip trailing inline comments (e.g. `tool[input]  # some note`) so
+        # that the endswith("]") check is not defeated by model-added comments.
+        # Only strip text after the last `]` that closes the outermost bracket.
+        last_bracket = tool_call.rfind("]")
+        if last_bracket != -1:
+            tool_call = tool_call[: last_bracket + 1].strip()
 
         if "[" not in tool_call or not tool_call.endswith("]"):
             print(f"ℹ️ `{e}` is treated as direct text evidence.")

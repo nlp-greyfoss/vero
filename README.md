@@ -2,17 +2,7 @@
 
 ![](assets/logo.png)
 
-<p align="center">
-  🌐 Available Languages:
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=zh">中文</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=de">Deutsch</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=es">Español</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=fr">Français</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=ja">日本語</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=ko">한국어</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=pt">Português</a> |
-  <a href="https://www.readme-i18n.com/nlp-greyfoss/vero?lang=ru">Русский</a>
-</p>
+English | [中文](./README_zh.md)
 
 **Vero** (from Latin *verus* + *zero*) is a lightweight Python framework for building LLM-based intelligent agents from scratch.
 
@@ -33,6 +23,7 @@ It provides a clean, extensible abstraction over the OpenAI Python SDK, supporti
   * `OpenAIFunctionAgent`: OpenAI function calling
   * `ReActAgent`: step-by-step Thought / Action / Observation loop
   * `ReWooAgent`: planner / worker / solver pipeline with dependency-aware execution
+  * `LLMCompilerAgent`: task-DAG planning with dependency-driven scheduling and replanning
 * **Tool system**
   * Declarative tool definition via decorator
   * OpenAI-compatible function schemas
@@ -62,6 +53,7 @@ It provides a clean, extensible abstraction over the OpenAI Python SDK, supporti
 │   ├── agents/
 │   │   ├── react_agent.py
 │   │   ├── rewoo_agent.py
+│   │   ├── llm_compiler_agent.py
 │   │   ├── openai_function_agent.py
 │   │   └── simple_agent.py
 │   ├── config/
@@ -152,6 +144,7 @@ Abstract base class for LLM-powered agents with tool usage.
 * `OpenAIFunctionAgent`: relies on native function calling support
 * `ReActAgent`: iterative reasoning with one tool step at a time
 * `ReWooAgent`: full planning first, then executes evidence calls level by level; independent evidence steps can run in parallel
+* `LLMCompilerAgent`: compiles a task DAG first, executes ready tasks as soon as dependencies are satisfied, and can replan when evidence is insufficient
 
 ---
 
