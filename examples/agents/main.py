@@ -73,7 +73,11 @@ def test_single_turn_agent(agent_class: Agent, max_turns=10):
     start = time.perf_counter()
     answer = run_agent(
         agent_class,
+<<<<<<< HEAD
         "what is the hometown of the current Australia open winner?",
+=======
+        "Find the headquarters city of Microsoft, Apple, Google, Nvidia, and Meta, then identify which city has the largest population in 2025.",
+>>>>>>> 6827d3ddfe0c0205701df11eda273ce73d8079ca
         max_turns=max_turns,
     )
     print(f"🏁 Final LLM Answer: {answer}\n")

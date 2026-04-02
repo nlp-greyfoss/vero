@@ -74,8 +74,8 @@ BAD — `#E6` returns a paragraph; `2026 - #E6` fails with a syntax error:
 ```
 GOOD — each `#E` holds a single number; arithmetic works cleanly:
 ```
-#E6: llm_tool[From #E1, extract 周星驰's birth year. Return only the 4-digit year, no other text.]
-#E7: llm_tool[From #E2, extract 陈道明's birth year. Return only the 4-digit year, no other text.]
+#E6: llm_tool[From #E1, extract Tom Hanks's birth year. Return only the 4-digit year, no other text.]
+#E7: llm_tool[From #E2, extract Morgan Freeman's birth year. Return only the 4-digit year, no other text.]
 ...
 #E11: calculate_math_expression[2026 - #E6]
 #E12: calculate_math_expression[2026 - #E7]

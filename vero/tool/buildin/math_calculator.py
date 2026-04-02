@@ -71,7 +71,9 @@ def calculate_math_expression(expression: str) -> str:
     """
     # define allowed names: math module functions + safe builtins
     allowed_names = {k: getattr(math, k) for k in dir(math) if not k.startswith("__")}
-    allowed_names.update({"max": max, "min": min, "abs": abs, "sum": sum, "round": round})
+    allowed_names.update(
+        {"max": max, "min": min, "abs": abs, "sum": sum, "round": round}
+    )
 
     try:
         expression = _preprocess_expression(expression)
