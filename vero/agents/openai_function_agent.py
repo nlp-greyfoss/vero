@@ -28,6 +28,7 @@ class OpenAIFunctionAgent(Agent):
         system_prompt: Optional[str] = None,
         max_turns: int = 5,
         tool_choice: str = "auto",
+        verbose: bool = True,
     ) -> None:
         """
         Initialize OpenAIFunctionAgent.
@@ -38,23 +39,25 @@ class OpenAIFunctionAgent(Agent):
             tools: Optional list of Tool instances.
             system_prompt: Optional system prompt override.
             max_turns: Maximum number of reasoning / tool-execution loops.
-            tool_choice: OpenAI tool_choice parameter ("auto", "none", or forced tool).
+            tool_choice: OpenAI tool_choice parameter ("auto", "none", or forced tool name).
+            verbose: If True, internal log messages are printed to stdout.
+                Defaults to True. Set to False to silence all agent-level output.
         """
-        print(f"🚀 Initializing OpenAIFunctionAgent `{name}` ...")
-
         super().__init__(
             name=name,
             llm=llm,
             tools=tools,
             system_prompt=system_prompt,
             max_turns=max_turns,
+            verbose=verbose,
         )
 
         self.tool_choice = tool_choice
         self.tools_schema = self._build_tool_schemas()
 
-        print(f"🛠️ Registered tools: {self.tools}")
-        print(f"⚙️ Tool choice mode: {self.tool_choice}")
+        self.log(f"🚀 Initializing OpenAIFunctionAgent `{name}` ...")
+        self.log(f"🛠️ Registered tools: {self.tools}")
+        self.log(f"⚙️ Tool choice mode: {self.tool_choice}")
 
         # Initialize conversation with system prompt
         self.add_message(Message.system(self._build_system_prompt()))
@@ -97,14 +100,14 @@ class OpenAIFunctionAgent(Agent):
                 - Inject tool results as Message.tool
             4. Repeat until a pure text response is produced
         """
-        print("\n==============================")
-        print(f"👤 User Input: {user_query}")
-        print("==============================\n")
+        self.log("\n==============================")
+        self.log(f"👤 User Input: {user_query}")
+        self.log("==============================\n")
 
         self.add_message(Message.user(user_query))
 
         for turn_idx in range(1, self.max_turns + 1):
-            print(f"🔁 Turn {turn_idx}/{self.max_turns}")
+            self.log(f"🔁 Turn {turn_idx}/{self.max_turns}")
 
             assistant_msg: Message = self.llm.generate(
                 messages=self._history,
@@ -112,7 +115,7 @@ class OpenAIFunctionAgent(Agent):
                 tool_choice=self.tool_choice,
             )
 
-            print(
+            self.log(
                 f"📤 LLM Assistant Message | "
                 f"content={assistant_msg.content!r}, "
                 f"tool_calls={bool(assistant_msg.tool_calls)}"
@@ -124,7 +127,7 @@ class OpenAIFunctionAgent(Agent):
             # Case A: Final text response (no tool calls)
             # -------------------------------------------------
             if not assistant_msg.tool_calls:
-                print("💬 No tool calls detected. Returning final answer.\n")
+                self.log("💬 No tool calls detected. Returning final answer.\n")
                 return assistant_msg.content or ""
 
             # -------------------------------------------------
@@ -136,7 +139,7 @@ class OpenAIFunctionAgent(Agent):
                 args_text = func["arguments"]
                 tool_call_id = tc["id"]
 
-                print(
+                self.log(
                     f"🧩 Tool call detected → "
                     f"name={tool_name}, id={tool_call_id}, raw_args={args_text}"
                 )
@@ -144,30 +147,30 @@ class OpenAIFunctionAgent(Agent):
                 # Parse arguments (OpenAI guarantees JSON string)
                 try:
                     args = json.loads(args_text)
-                    print("📦 Tool arguments parsed successfully.")
+                    self.log("📦 Tool arguments parsed successfully.")
                 except Exception as e:
-                    print(f"❌ Failed to parse tool arguments: {e}")
+                    self.log(f"❌ Failed to parse tool arguments: {e}")
                     args = {}
 
                 # Lookup tool
                 tool: Tool | None = self.tool_by_names.get(tool_name)
                 if not tool:
-                    print("❌ Tool not found!")
+                    self.log("❌ Tool not found!")
                     raise ToolNotFoundError(f"Unknown tool: {tool_name}")
 
                 # Execute tool
-                print(f"🔧 Executing tool `{tool_name}` with args={args}")
+                self.log(f"🔧 Executing tool `{tool_name}` with args={args}")
                 try:
                     start = time.perf_counter()
                     output = tool(**args)
                     cost = time.perf_counter() - start
-                    print(f"📦 Tool output: {output} | ⏱️ Cost: {cost:.3f}s")
+                    self.log(f"📦 Tool output: {output} | ⏱️ Cost: {cost:.3f}s")
                 except Exception as e:
                     output = f"Tool execution failed: {e}"
-                    print(f"💥 Tool execution failed: {e}")
+                    self.log(f"💥 Tool execution failed: {e}")
 
                 # Inject tool result back into history
-                print("📥 Injecting tool result into conversation history.")
+                self.log("📥 Injecting tool result into conversation history.")
                 self.add_message(
                     Message.tool(
                         content=str(output),

@@ -28,6 +28,7 @@ class Agent(ABC):
         tools: Optional[List[Tool]] = None,
         system_prompt: Optional[str] = None,
         max_turns: int = 3,
+        verbose: bool = True,
     ) -> None:
         """
         Initialize a generic agent.
@@ -38,12 +39,15 @@ class Agent(ABC):
             tools (List[Tool] | None): Optional list of tools the agent can call.
             system_prompt (str | None): System-level instructions to prime the model.
             max_turns (int): Maximum reasoning turns allowed per execution.
+            verbose (bool): If True, internal log messages are printed to stdout.
+                Defaults to True. Set to False to silence all agent-level output.
         """
         self.name = name
         self.llm = llm
         self.tools = tools or []
         self.max_turns = max_turns
         self.system_prompt = system_prompt
+        self._verbose = verbose
 
         # Internal conversation history (Message objects)
         self._history: List[Message] = []
@@ -71,6 +75,22 @@ class Agent(ABC):
         pass
 
     # -------------------------------------------------------
+    # Logging
+    # -------------------------------------------------------
+    def log(self, message: str) -> None:
+        """
+        Print a diagnostic message if verbose mode is enabled.
+
+        Subclasses should call this instead of ``print`` directly so that
+        callers can silence all agent output by passing ``verbose=False``.
+
+        Args:
+            message (str): The message to print.
+        """
+        if self._verbose:
+            print(message)
+
+    # -------------------------------------------------------
     # Tool metadata helpers
     # -------------------------------------------------------
     @property
@@ -84,7 +104,9 @@ class Agent(ABC):
         """
         lines = []
         for tool in self.tools:
-            args_text = ", ".join(f"{name}: {typ}" for (name, typ, *_rest) in tool.arguments)
+            args_text = ", ".join(
+                f"{name}: {typ}" for (name, typ, *_rest) in tool.arguments
+            )
             lines.append(f"{tool.name}({args_text}) - {tool.description}")
         return "\n".join(lines)
 
