@@ -134,6 +134,17 @@ class Agent(ABC):
         """Clear all stored conversation history."""
         self._history.clear()
 
+    def format_history(self) -> str:
+        """
+        Serialise conversation history into a readable string for prompt injection.
+
+        Each message is rendered as ``role: content`` on its own line.
+        Returns an empty string when there is no prior history.
+        """
+        if not self._history:
+            return ""
+        return "\n".join(f"{m.role}: {m.content}" for m in self._history)
+
     # -------------------------------------------------------
     # Representation
     # -------------------------------------------------------
