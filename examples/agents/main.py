@@ -1,9 +1,15 @@
 import time
 import os
-
+import random
 
 from vero.core import ChatOpenAI, Agent
-from vero.agents import SimpleAgent, OpenAIFunctionAgent, ReActAgent, ReWooAgent
+from vero.agents import (
+    SimpleAgent,
+    OpenAIFunctionAgent,
+    ReActAgent,
+    ReWOOAgent,
+    PlanAndExecuteAgent,
+)
 from vero.tool.buildin import (
     calculate_math_expression,
     duckduckgo_search,
@@ -67,7 +73,7 @@ def test_single_turn_agent(agent_class: Agent, max_turns=10):
     start = time.perf_counter()
     answer = run_agent(
         agent_class,
-        "Find the headquarters city of Microsoft, Apple, Amazon, Nvidia, and Meta, then identify which city has the largest population.",
+        "what is the hometown of the current Australia open winner?",
         max_turns=max_turns,
     )
     print(f"🏁 Final LLM Answer: {answer}\n")
@@ -76,5 +82,5 @@ def test_single_turn_agent(agent_class: Agent, max_turns=10):
 
 
 if __name__ == "__main__":
-    agent_class = ReWooAgent
+    agent_class = PlanAndExecuteAgent
     test_single_turn_agent(agent_class)
