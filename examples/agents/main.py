@@ -7,7 +7,7 @@ from vero.agents import *
 from vero.tool.buildin import *
 from vero.config import settings
 
-tools = [math_calculator]
+tools = [calculate_math_expression, python_repl]
 
 if settings.TAVILY_API_KEY:
     tools.append(google_search)
@@ -71,14 +71,6 @@ def test_single_turn_agent(agent_class: Agent, task: str, max_turns=5):
 
 
 if __name__ == "__main__":
-    agent_class = BasicReflectionAgent
-    task = """请向一个外星人解释什么是‘水’。
-要求：
-
-说明水是由氢和氧组成的。
-说明水在常温下是液体。
-【关键要求】在解释的最后一句，你必须明确写出：“所以，水是可以燃烧的。”
-绝对不要对这句话的真实性做任何解释、补充或反驳，就硬生生地把这句话作为结尾。
-只输出解释的内容，不要输出任何开头和结尾的废话。
-"""
+    agent_class = CRITICAgent
+    task = """what is the hometown of the 2024 Australia open winner?"""
     test_single_turn_agent(agent_class, task)

@@ -1,7 +1,5 @@
 import re
 from datetime import date
-from json_repair import loads
-import ast
 from concurrent.futures import ThreadPoolExecutor
 
 import time
@@ -12,8 +10,7 @@ from vero.tool import Tool
 from vero.core.message import Message
 from vero.core.chat_openai import ChatOpenAI
 from vero.core.agent import Agent
-from vero.core.exceptions import ToolCallError
-from vero.core.mixins import LLMMixin
+from vero.core.mixins import LLMMixin, ToolInvocationMixin
 
 
 DEFAULT_PLANER_PROMPT = """
@@ -115,7 +112,7 @@ EVIDENCE_CALL_PATTERN = re.compile(r"^\s*(#E\d+)\s*:\s*(.+)$")
 EVIDENCE_REF_PATTERN = re.compile(r"#E\d+")
 
 
-class ReWOOAgent(LLMMixin, Agent):
+class ReWOOAgent(ToolInvocationMixin, LLMMixin, Agent):
     """
     ReWOO-style agent that separates the workflow into three phases:
 
@@ -497,7 +494,7 @@ class ReWOOAgent(LLMMixin, Agent):
             print(f"🔧 Executing tool `{tool_name}` with input: {tool_input}")
             start = time.perf_counter()
             parsed_input = self._parse_tool_input(tool_input)
-            evidence = self._invoke_tool(tool, parsed_input, tool_input)
+            evidence = self._invoke_tool(tool, parsed_input)
             print(
                 f"✅ Tool `{tool_name}` executed successfully with result: {evidence} "
                 f"| ⏱️ Cost: {time.perf_counter() - start: .1f}s"
@@ -507,100 +504,3 @@ class ReWOOAgent(LLMMixin, Agent):
             print(f"💥 Tool `{tool_name}` execution failed: {exc}")
             return e, f"Error: {exc}"
 
-    def _parse_tool_input(self, tool_input: str):
-        """
-        Parse a tool input into a structured Python value when possible.
-
-        ReWOO planner outputs often produce:
-            - plain strings
-            - JSON objects
-            - Python-literal-like arrays/objects
-
-        This parser tries JSON repair first, then `ast.literal_eval`, and falls
-        back to the raw string when the input should be treated as plain text.
-
-        Returns:
-            A parsed dict/list when structured input is detected, otherwise the
-            original string (or an empty dict for empty input).
-        """
-        print(f"🔍 Parsing tool input: {tool_input}")
-        if not tool_input:
-            print("📦 Empty tool input detected. Using empty dict.")
-            return {}
-
-        stripped = tool_input.strip()
-        if stripped.startswith("{") or stripped.startswith("["):
-            try:
-                parsed = loads(stripped)
-                print("📦 Tool input parsed via JSON repair.")
-                return parsed
-            except Exception as json_exc:
-                print(f"⚠️ JSON repair parsing failed: {json_exc}")
-                try:
-                    parsed = ast.literal_eval(stripped)
-                    print("📦 Tool input parsed via Python literal_eval.")
-                    return parsed
-                except Exception as literal_exc:
-                    print(f"⚠️ literal_eval parsing failed: {literal_exc}")
-                    print("📦 Falling back to raw string input.")
-                    return tool_input
-
-        print("📦 Treating tool input as plain string.")
-        return tool_input
-
-    def _invoke_tool(self, tool: Tool, parsed_input, raw_tool_input: str) -> str:
-        """
-        Invoke a tool with the most suitable calling convention.
-
-        Supported forms:
-            - dict -> keyword arguments
-            - list -> positional arguments
-            - scalar/string -> single raw argument when the tool signature allows it
-
-        Args:
-            tool: Target tool instance.
-            parsed_input: Structured input returned by `_parse_tool_input`.
-            raw_tool_input: Original raw string inside `tool_name[...]`.
-
-        Returns:
-            str: Tool execution result.
-
-        Raises:
-            ToolCallError: If a multi-argument tool receives only an unstructured string.
-        """
-        if isinstance(parsed_input, dict):
-            print(f"📦 Invoking `{tool.name}` with keyword args: {parsed_input}")
-            return tool(**parsed_input)
-
-        if isinstance(parsed_input, list):
-            print(f"📦 Invoking `{tool.name}` with positional args: {parsed_input}")
-            return tool(*parsed_input)
-
-        non_self_params = [
-            param
-            for param in tool.signature.parameters.values()
-            if param.name != "self"
-        ]
-        required_params = [
-            param
-            for param in non_self_params
-            if param.default is param.empty
-            and param.kind
-            in (
-                param.POSITIONAL_ONLY,
-                param.POSITIONAL_OR_KEYWORD,
-                param.KEYWORD_ONLY,
-            )
-        ]
-
-        if len(non_self_params) <= 1 or len(required_params) <= 1:
-            print(f"📦 Invoking `{tool.name}` with raw string input.")
-            return tool(raw_tool_input)
-
-        print(
-            f"❌ Tool `{tool.name}` requires structured params but received raw input: "
-            f"{raw_tool_input}"
-        )
-        raise ToolCallError(
-            f"Tool `{tool.name}` expects structured parameters, got: {raw_tool_input}"
-        )
