@@ -45,6 +45,7 @@ Set `is_sufficient` to false only if:
 
 ## Output Format
 {{
+    "thinking": "<step-by-step reasoning to verify the response against the task requirements>",
     "is_sufficient": <true or false>,
     "feedback": "<describe the must-fix issue if is_sufficient is false, otherwise empty string>"
 }}
@@ -235,6 +236,9 @@ class BasicReflectionAgent(Agent):
 
         try:
             parsed = loads(raw)
+            thinking = parsed.get("thinking", "")
+            if thinking:
+                self.log(f"💭 Thinking:\n{thinking}")
             result = ReflectionResult(
                 is_sufficient=bool(parsed.get("is_sufficient", True)),
                 feedback=parsed.get("feedback", ""),
