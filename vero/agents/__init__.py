@@ -4,3 +4,4 @@ from .react_agent import ReActAgent
 from .rewoo_agent import ReWOOAgent
 from .basic_reflection_agent import BasicReflectionAgent
 from .critic_agent import CRITICAgent
+from .codeact_agent import CodeActAgent

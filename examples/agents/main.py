@@ -71,6 +71,6 @@ def test_single_turn_agent(agent_class: Agent, task: str, max_turns=5):
 
 
 if __name__ == "__main__":
-    agent_class = CRITICAgent
-    task = """what is the hometown of the 2024 Australia open winner?"""
+    agent_class = CodeActAgent
+    task = """what is the hometown of the 2025 Australia open winner?"""
     test_single_turn_agent(agent_class, task)
